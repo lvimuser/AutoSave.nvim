@@ -1,7 +1,6 @@
 local autocmds = require("autosave.modules.autocmds")
 local autosave = require("autosave")
 local M = {}
-require("autosave.utils.viml_funcs")
 
 local function on()
 	if autosave.hook_before_on ~= nil then
@@ -29,19 +28,10 @@ local function off()
 	end
 end
 
-function M.main(option)
-	option = option or "load"
-	if option == "toggle" then
-		if vim.g.autosave_state == true then
-			off()
-		else
-			on()
-		end
-	elseif option == "on" then
-		on()
-	elseif option == "off" then
-		off()
-	end
+M.off = off
+M.on = on
+M.toggle = function()
+	_ = vim.g.autosave_state == true and off() or on()
 end
 
 return M

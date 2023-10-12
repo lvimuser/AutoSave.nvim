@@ -1,23 +1,34 @@
----@diagnostic disable: undefined-field
 local fn = vim.fn
 
 local opts = require("autosave.config").options
 local autosave = require("autosave")
 local utils = require("autosave/utils.utils")
 
-local default_events = { "InsertLeave", "TextChanged" }
-local default_abort_events = { "TextChanged", "InsertEnter" }
-local on_focus_change_events = { "FocusLost", "TabLeave", "WinLeave" }
-
-local modified
-
 local M = {}
+
+local function clear_cmdline()
+	if vim.api.nvim_get_mode().mode ~= "c" then
+		vim.cmd.echon()
+	end
+end
+
+local message = function()
+	local msg = opts.execution_message
+	msg = type(msg) == "function" and msg() or msg
+
+	if msg then
+		print(msg)
+
+		_ = opts.clean_command_line_interval > 0
+			and vim.defer_fn(clear_cmdline, opts.clean_command_line_interval)
+	end
+end
 
 local function actual_save()
 	local first_char_pos = fn.getpos("'[")
 	local last_char_pos = fn.getpos("']")
 
-	if opts["write_all_buffers"] then
+	if opts.write_all_buffers then
 		vim.cmd("silent! write all")
 	else
 		vim.cmd("silent! write")
@@ -26,11 +37,7 @@ local function actual_save()
 	fn.setpos("'[", first_char_pos)
 	fn.setpos("']", last_char_pos)
 
-	if not modified then
-		modified = true
-	end
-
-	M.message_and_interval()
+	message()
 end
 
 local function assert_user_conditions()
@@ -41,10 +48,8 @@ local function assert_user_conditions()
 		end
 	end
 
-	if conditions.modifiable then
-		if vim.api.nvim_eval([[&modifiable]]) == 0 then
-			return false
-		end
+	if conditions.modifiable and not vim.bo.modifiable then
+		return false
 	end
 
 	if conditions.filename_is_not and #conditions.filename_is_not > 0 then
@@ -62,8 +67,8 @@ local function assert_user_conditions()
 	end
 
 	if opts.conditions.restrict_to_home_dirs then
-		local path = fn.expand("%:p")
-		local home_dir = fn.expand("$HOME")
+		local path = fn.expand("%:p") --[[@as string]]
+		local home_dir = fn.expand("$HOME") --[[@as string]]
 		if not path:find(home_dir, 1, true) then
 			return false
 		end
@@ -72,39 +77,66 @@ local function assert_user_conditions()
 	return true
 end
 
-function M.message_and_interval()
-	if modified then
-		modified = false
-		local execution_message = opts["execution_message"]
-		if execution_message ~= "" then
-			print(
-				type(execution_message) == "function" and execution_message() or execution_message
+---@param client lsp.Client
+local pending_request = function(client, bufnr)
+	local ms = vim.lsp.protocol.Methods
+	for _, request in pairs(client.requests or {}) do
+		if
+			request.type == "pending"
+			and request.bufnr == bufnr
+			and (
+				request.method:match(ms.workspace_executeCommand)
+				or request.method:match(ms.textDocument_formatting)
+				or request.method:match(ms.textDocument_rangeFormatting)
+				or request.method:match(ms.textDocument_rename)
 			)
-		end
-
-		if opts["clean_command_line_interval"] > 0 then
-			vim.cmd(
-				[[call timer_start(]]
-					.. opts["clean_command_line_interval"]
-					.. [[, funcref('g:AutoSaveClearCommandLine'))]]
-			)
+		then
+			return request.method
 		end
 	end
 end
 
-local changedtick = vim.api.nvim_buf_get_changedtick(0)
+local changedtick
 function M.save()
 	local cur_tick = vim.api.nvim_buf_get_changedtick(0)
 	if changedtick == cur_tick then
 		return
 	end
 
-	if vim.bo.readonly or not (vim.bo.modified and assert_user_conditions()) then
+	if vim.bo.readonly or not vim.bo.modified then
+		return
+	end
+
+	if not assert_user_conditions() then
 		return
 	end
 
 	if autosave.hook_before_saving then
 		autosave.hook_before_saving()
+	end
+
+	if vim.api.nvim_get_mode()["mode"] ~= "n" then
+		-- do not save on insert mode
+		vim.g.auto_save_abort = true
+	elseif vim.b.visual_multi then
+		vim.g.auto_save_abort = true
+	elseif
+		package.loaded["luasnip"]
+		and require("luasnip.session").current_nodes[vim.api.nvim_get_current_buf()]
+	then
+		-- do not save when we have an active snippet; messes up extmarks and breaks jumps
+		vim.g.auto_save_abort = true
+	else
+		local bufnr = vim.api.nvim_get_current_buf()
+		-- pending lsp requests
+		for _, client in pairs(vim.lsp.get_clients({ bufrn = bufnr })) do
+			local r = pending_request(client, bufnr)
+			if r then
+				vim.notify(string.format("Aborted autosave due to pending request: %s ", r))
+				vim.g.auto_save_abort = true
+				break
+			end
+		end
 	end
 
 	if vim.g.auto_save_abort then
@@ -121,29 +153,20 @@ function M.save()
 	changedtick = vim.api.nvim_buf_get_changedtick(0)
 end
 
-local function get_events(events)
-	events = events or "events"
-	if not opts[events] or vim.tbl_isempty(opts[events]) then
-		return events == "events" and default_events
-			or events == "abort_events" and default_abort_events
-	end
-	return opts[events]
-end
-
 local timer
 function M.load_autocommands()
-	if opts["debounce_delay"] == 0 then
+	if opts.debounce_delay == 0 then
 		M.debounced_save = M.save
 		M.abort = function() end
 	else
-		timer, M.debounced_save = utils.debounce(M.save, opts["debounce_delay"])
+		timer, M.debounced_save = utils.debounce(M.save, opts.debounce_delay)
 		M.abort = function()
-			timer:stop()
+			_ = timer and timer:stop()
 		end
 	end
 
 	if opts.debounce_delay ~= 0 then
-		vim.api.nvim_create_autocmd(get_events("abort_events"), {
+		vim.api.nvim_create_autocmd(opts.abort_events, {
 			group = vim.api.nvim_create_augroup("autosave_abort", {}),
 			pattern = "*",
 			callback = M.abort,
@@ -156,7 +179,7 @@ function M.load_autocommands()
 			M.save()
 		end, 100)
 
-		vim.api.nvim_create_autocmd(on_focus_change_events, {
+		vim.api.nvim_create_autocmd({ "FocusLost", "TabLeave", "WinLeave" }, {
 			group = vim.api.nvim_create_augroup("autosave_focus_change", {}),
 			pattern = "*",
 			callback = focus_save,
@@ -164,7 +187,7 @@ function M.load_autocommands()
 		})
 	end
 
-	vim.api.nvim_create_autocmd(get_events(), {
+	vim.api.nvim_create_autocmd(opts.events, {
 		group = vim.api.nvim_create_augroup("autosave_save", {}),
 		pattern = "*",
 		callback = M.debounced_save,

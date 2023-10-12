@@ -4,8 +4,10 @@ local M = {}
 M.debounce = function(fn, duration)
 	local timer = vim.loop.new_timer()
 	local function inner()
-		timer:stop()
-		timer:start(duration, 0, vim.schedule_wrap(fn))
+		if timer then
+			timer:stop()
+			timer:start(duration, 0, vim.schedule_wrap(fn))
+		end
 	end
 
 	local group = vim.api.nvim_create_augroup("AutoSaveCleanup", {})
