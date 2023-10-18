@@ -4,6 +4,9 @@ local opts = require("autosave.config").options
 local autosave = require("autosave")
 local utils = require("autosave/utils.utils")
 
+-- TODO Remove after nvim 0.10 release
+local get_clients = vim.lsp.get_active_clients or vim.lsp.get_clients
+
 local M = {}
 
 local function clear_cmdline()
@@ -129,10 +132,10 @@ function M.save()
 	else
 		local bufnr = vim.api.nvim_get_current_buf()
 		-- pending lsp requests
-		for _, client in pairs(vim.lsp.get_clients({ bufrn = bufnr })) do
+		for _, client in pairs(get_clients({ bufrn = bufnr })) do
 			local r = pending_request(client, bufnr)
 			if r then
-				vim.notify(string.format("Aborted autosave due to pending request: %s ", r))
+				vim.notify(string.format("Aborted autosave due to pending LSP request: %s ", r))
 				vim.g.auto_save_abort = true
 				break
 			end
@@ -179,7 +182,7 @@ function M.load_autocommands()
 			M.save()
 		end, 100)
 
-		vim.api.nvim_create_autocmd({ "FocusLost", "TabLeave", "WinLeave" }, {
+		vim.api.nvim_create_autocmd({ "FocusLost", "TabLeave", "WinLeave", "BufLeave" }, {
 			group = vim.api.nvim_create_augroup("autosave_focus_change", {}),
 			pattern = "*",
 			callback = focus_save,

@@ -8,6 +8,8 @@ config.options = {
 	abort_events = { "InsertEnter" },
 	conditions = {
 		exists = true,
+		modifiable = true,
+		restrict_to_home_dirs = true,
 		filename_is_not = {},
 		filetype_is_not = {
 			"neo-tree",
@@ -32,8 +34,6 @@ config.options = {
 			"nofile",
 			"", -- for all buffers without a file type
 		},
-		restrict_to_home_dirs = true,
-		modifiable = true,
 	},
 	write_all_buffers = false,
 	on_off_commands = false,
