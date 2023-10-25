@@ -123,6 +123,8 @@ function M.save()
 		vim.g.auto_save_abort = true
 	elseif vim.b.visual_multi then
 		vim.g.auto_save_abort = true
+	elseif #vim.diagnostic.get(0, { severity = vim.diagnostic.severity.ERROR }) > 0 then
+		vim.g.auto_save_abort = true
 	elseif
 		package.loaded["luasnip"]
 		and require("luasnip.session").current_nodes[vim.api.nvim_get_current_buf()]
