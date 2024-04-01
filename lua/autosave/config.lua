@@ -27,6 +27,7 @@ config.options = {
 			"hgcommit",
 			"markdown",
 			"TelescopePrompt",
+			"TelescopeResults",
 			"undotree",
 			"neogitstatus",
 			"lspinfo",

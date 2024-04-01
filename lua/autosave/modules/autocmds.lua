@@ -80,7 +80,7 @@ local function assert_user_conditions()
 	return true
 end
 
----@param client lsp.Client
+---@param client vim.lsp.Client
 local pending_request = function(client, bufnr)
 	local ms = vim.lsp.protocol.Methods
 	for _, request in pairs(client.requests or {}) do
@@ -89,6 +89,7 @@ local pending_request = function(client, bufnr)
 			and request.bufnr == bufnr
 			and (
 				request.method:match(ms.workspace_executeCommand)
+				or request.method:match(ms.workspace_applyEdit)
 				or request.method:match(ms.textDocument_formatting)
 				or request.method:match(ms.textDocument_rangeFormatting)
 				or request.method:match(ms.textDocument_rename)
@@ -121,7 +122,13 @@ function M.save()
 	if vim.api.nvim_get_mode()["mode"] ~= "n" then
 		-- do not save on insert mode
 		vim.g.auto_save_abort = true
+	elseif vim.fn.state("oS") ~= "" then
+		-- do not save when in operator pending mode or not SafeState
+		vim.g.auto_save_abort = true
 	elseif vim.b.visual_multi then
+		vim.g.auto_save_abort = true
+	elseif vim.api.nvim_win_get_config(0).zindex then
+		-- is_relative / float
 		vim.g.auto_save_abort = true
 	elseif
 		package.loaded["luasnip"]
@@ -169,10 +176,20 @@ function M.load_autocommands()
 	end
 
 	if opts.debounce_delay ~= 0 then
+		local group = vim.api.nvim_create_augroup("autosave_abort", {})
 		vim.api.nvim_create_autocmd(opts.abort_events, {
-			group = vim.api.nvim_create_augroup("autosave_abort", {}),
+			group = group,
 			pattern = "*",
 			callback = M.abort,
+			desc = "autosave_abort",
+		})
+
+		vim.api.nvim_create_autocmd("FileType", {
+			group = group,
+			pattern = { "TelescopePrompt", "DressingInput" },
+			callback = function()
+				M.abort()
+			end,
 			desc = "autosave_abort",
 		})
 	end
