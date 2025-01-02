@@ -19,6 +19,7 @@ M.debounce = function(fn, duration)
 				if not timer:is_closing() then
 					timer:close()
 				end
+				---@diagnostic disable-next-line: cast-local-type
 				timer = nil
 			end
 		end,

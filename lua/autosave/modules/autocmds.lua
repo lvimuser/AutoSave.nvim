@@ -1,11 +1,6 @@
-local fn = vim.fn
-
 local opts = require("autosave.config").options
 local autosave = require("autosave")
 local utils = require("autosave/utils.utils")
-
--- TODO Remove after nvim 0.10 release
-local get_clients = vim.lsp.get_active_clients or vim.lsp.get_clients
 
 local M = {}
 
@@ -27,52 +22,67 @@ local message = function()
 	end
 end
 
-local function actual_save()
-	local first_char_pos = fn.getpos("'[")
-	local last_char_pos = fn.getpos("']")
+---@param bufnr integer
+local function actual_save(bufnr)
+	vim._with({ buf = bufnr }, function()
+		local first_char_pos = vim.fn.getpos("'[")
+		local last_char_pos = vim.fn.getpos("']")
 
-	if opts.write_all_buffers then
-		vim.cmd("silent! write all")
-	else
-		vim.cmd("silent! write")
-	end
+		if opts.write_all_buffers then
+			vim.cmd("silent! write all")
+		else
+			vim.cmd("silent! write")
+		end
 
-	fn.setpos("'[", first_char_pos)
-	fn.setpos("']", last_char_pos)
+		vim.fn.setpos("'[", first_char_pos)
+		vim.fn.setpos("']", last_char_pos)
 
-	message()
+		message()
+	end)
 end
 
-local function assert_user_conditions()
+local function assert_user_conditions(bufnr)
 	local conditions = opts.conditions
+
+	if conditions.modifiable and not vim.bo[bufnr].modifiable then
+		return false
+	end
+
 	if conditions.exists then
-		if fn.filereadable(fn.expand("%:p")) == 0 then
+		if
+			vim._with({ buf = bufnr }, function()
+				return vim.fn.filereadable(vim.fn.expand("%:p"))
+			end) == 0
+		then
 			return false
 		end
 	end
 
-	if conditions.modifiable and not vim.bo.modifiable then
-		return false
-	end
-
 	if conditions.filename_is_not and #conditions.filename_is_not > 0 then
-		local filename = fn.expand("%:t")
+		local filename = vim._with({ buf = bufnr }, function()
+			return vim.fn.expand("%:t")
+		end)
+
 		if vim.tbl_contains(conditions.filename_is_not, filename) then
 			return false
 		end
 	end
 
 	if conditions.filetype_is_not and #conditions.filetype_is_not > 0 then
-		local filetype = vim.api.nvim_eval([[&filetype]])
+		local filetype = vim.bo[bufnr].filetype
 		if vim.tbl_contains(conditions.filetype_is_not, filetype) then
 			return false
 		end
 	end
 
 	if opts.conditions.restrict_to_home_dirs then
-		local path = fn.expand("%:p") --[[@as string]]
-		local home_dir = fn.expand("$HOME") --[[@as string]]
-		if not path:find(home_dir, 1, true) then
+		local found = vim._with({ buf = bufnr }, function()
+			local path = vim.fn.expand("%:p") --[[@as string]]
+			local home_dir = vim.fn.expand("$HOME") --[[@as string]]
+			return path:find(home_dir, 1, true)
+		end)
+
+		if not found then
 			return false
 		end
 	end
@@ -100,18 +110,28 @@ local pending_request = function(client, bufnr)
 	end
 end
 
-local changedtick
-function M.save()
-	local cur_tick = vim.api.nvim_buf_get_changedtick(0)
-	if changedtick == cur_tick then
+local changedtick = {}
+
+function M.save(bufnr)
+	bufnr = vim._resolve_bufnr(bufnr)
+	if not vim.api.nvim_buf_is_valid(bufnr) then
 		return
 	end
 
-	if vim.bo.readonly or not vim.bo.modified then
+	local cur_tick = vim.api.nvim_buf_get_changedtick(bufnr)
+	if changedtick[bufnr] == cur_tick then
 		return
 	end
 
-	if not assert_user_conditions() then
+	if vim.bo[bufnr].readonly or not vim.bo[bufnr].modified then
+		return
+	end
+
+	if vim.bo[bufnr].buftype ~= "" then
+		return
+	end
+
+	if not assert_user_conditions(bufnr) then
 		return
 	end
 
@@ -119,6 +139,7 @@ function M.save()
 		autosave.hook_before_saving()
 	end
 
+	-- TODO scope auto_savev_abort per buffer
 	if vim.api.nvim_get_mode()["mode"] ~= "n" then
 		-- do not save on insert mode
 		vim.g.auto_save_abort = true
@@ -127,19 +148,12 @@ function M.save()
 		vim.g.auto_save_abort = true
 	elseif vim.b.visual_multi then
 		vim.g.auto_save_abort = true
-	elseif vim.api.nvim_win_get_config(0).zindex then
-		-- is_relative / float
-		vim.g.auto_save_abort = true
-	elseif
-		package.loaded["luasnip"]
-		and require("luasnip.session").current_nodes[vim.api.nvim_get_current_buf()]
-	then
+	elseif package.loaded["luasnip"] and require("luasnip.session").current_nodes[bufnr] then
 		-- do not save when we have an active snippet; messes up extmarks and breaks jumps
 		vim.g.auto_save_abort = true
 	else
-		local bufnr = vim.api.nvim_get_current_buf()
 		-- pending lsp requests
-		for _, client in pairs(get_clients({ bufrn = bufnr })) do
+		for _, client in pairs(vim.lsp.get_clients({ bufrn = bufnr })) do
 			local r = pending_request(client, bufnr)
 			if r then
 				vim.notify(string.format("Aborted autosave due to pending LSP request: %s ", r))
@@ -154,16 +168,17 @@ function M.save()
 		return
 	end
 
-	actual_save()
+	actual_save(bufnr)
 
 	if autosave.hook_after_saving then
 		autosave.hook_after_saving()
 	end
 
-	changedtick = vim.api.nvim_buf_get_changedtick(0)
+	changedtick[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
 end
 
 local timer
+
 function M.load_autocommands()
 	if opts.debounce_delay == 0 then
 		M.debounced_save = M.save
@@ -195,14 +210,16 @@ function M.load_autocommands()
 	end
 
 	if opts.on_focus_change then
-		local focus_save = utils.leading_debounce(function()
-			M.save()
-		end, 100)
+		local focus_save = utils.leading_debounce(M.save, 100)
 
-		vim.api.nvim_create_autocmd({ "FocusLost", "TabLeave", "WinLeave", "BufLeave" }, {
+		-- vim.api.nvim_create_autocmd({ "FocusLost", "TabLeave", "WinLeave" }, {
+		-- we should save all open buffers in curernt tabpage on FocusLost
+		vim.api.nvim_create_autocmd({ "FocusLost" }, {
 			group = vim.api.nvim_create_augroup("autosave_focus_change", {}),
 			pattern = "*",
-			callback = focus_save,
+			callback = function(args)
+				focus_save(args.buf)
+			end,
 			desc = "autosave_focus_save",
 		})
 	end
@@ -210,11 +227,15 @@ function M.load_autocommands()
 	vim.api.nvim_create_autocmd(opts.events, {
 		group = vim.api.nvim_create_augroup("autosave_save", {}),
 		pattern = "*",
-		callback = M.debounced_save,
+		callback = function(args)
+			M.debounced_save(args.buf)
+		end,
 		desc = "autosave_save",
 	})
 end
 
+-- TODO scope timer per buffer?
+-- BufDelete or BufUnload
 function M.unload_autocommands()
 	if timer then
 		timer:stop()
