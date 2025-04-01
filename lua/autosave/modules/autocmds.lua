@@ -25,17 +25,11 @@ end
 ---@param bufnr integer
 local function actual_save(bufnr)
 	vim._with({ buf = bufnr }, function()
-		local first_char_pos = vim.fn.getpos("'[")
-		local last_char_pos = vim.fn.getpos("']")
-
 		if opts.write_all_buffers then
-			vim.cmd("silent! write all")
+			vim.cmd("lockmarks silent! write all")
 		else
-			vim.cmd("silent! write")
+			vim.cmd("lockmarks silent! write")
 		end
-
-		vim.fn.setpos("'[", first_char_pos)
-		vim.fn.setpos("']", last_char_pos)
 
 		message()
 	end)
@@ -139,7 +133,7 @@ function M.save(bufnr)
 		autosave.hook_before_saving()
 	end
 
-	-- TODO scope auto_savev_abort per buffer
+	-- TODO scope auto_save_abort per buffer
 	if vim.api.nvim_get_mode()["mode"] ~= "n" then
 		-- do not save on insert mode
 		vim.g.auto_save_abort = true
